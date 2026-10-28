@@ -1,0 +1,10 @@
+# Architecture A : l'entrepôt relationnel de la démo
+services:
+  entrepot:
+    image: postgres:18.0
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: marche
+    ports:
+      - "5442:5432"
