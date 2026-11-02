@@ -22,6 +22,7 @@ import signal
 import sys
 import threading
 from collections import Counter
+from typing import Any
 
 import psycopg
 from faker import Faker
@@ -29,7 +30,7 @@ from rich.console import Console
 from rich.markup import escape
 
 # Adresses de la machine par défaut ; le service data-generator passe par le réseau Docker
-CONNEXION = {
+CONNEXION: dict[str, str] = {
     "host": os.environ.get("POSTGRES_HOST", "localhost"),
     "port": os.environ.get("POSTGRES_PORT", "15432"),
     "dbname": "boutique",
@@ -46,7 +47,7 @@ POINTS_MAX = 5000
 CLIENT_AU_HASARD = "id = (SELECT id FROM customers ORDER BY random() LIMIT 1)"
 
 
-def inserer(cur, faux):
+def inserer(cur: psycopg.Cursor[Any], faux: Faker) -> str:
     nom, email, ville, points = faux.name(), faux.ascii_safe_email(), faux.city(), random.randint(0, POINTS_MAX)
     cur.execute(
         "INSERT INTO customers (full_name, email, city, loyalty_points) VALUES (%s, %s, %s, %s) RETURNING id",
@@ -55,7 +56,7 @@ def inserer(cur, faux):
     return f"id={cur.fetchone()[0]} {nom}, {ville}, {points} points"
 
 
-def modifier(cur, faux):
+def modifier(cur: psycopg.Cursor[Any], faux: Faker) -> str | None:
     if random.random() < 0.5:
         colonne, valeur = "city", faux.city()
     else:
@@ -69,13 +70,13 @@ def modifier(cur, faux):
     return ligne and f"id={ligne[0]} {colonne} = {valeur}"
 
 
-def supprimer(cur):
+def supprimer(cur: psycopg.Cursor[Any]) -> str | None:
     cur.execute(f"DELETE FROM customers WHERE {CLIENT_AU_HASARD} RETURNING id, full_name")
     ligne = cur.fetchone()
     return ligne and f"id={ligne[0]} {ligne[1]}"
 
 
-def appliquer(cur, faux, operation):
+def appliquer(cur: psycopg.Cursor[Any], faux: Faker, operation: str) -> tuple[str, str]:
     """Applique l'opération et renvoie ce qui a réellement été fait, pour l'affichage."""
     if operation == "UPDATE" and (detail := modifier(cur, faux)):
         return "UPDATE", detail
@@ -85,14 +86,14 @@ def appliquer(cur, faux, operation):
     return "INSERT", inserer(cur, faux)
 
 
-def au_moins_un(texte):
+def au_moins_un(texte: str) -> int:
     valeur = int(texte)
     if valeur < 1:
         raise argparse.ArgumentTypeError("doit valoir au moins 1")
     return valeur
 
 
-def lire_arguments():
+def lire_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Génère du trafic sur public.customers.")
     parser.add_argument("--batch-size", type=au_moins_un, default=5, help="opérations par salve (défaut : 5)")
     parser.add_argument("--interval", type=float, default=2.0, help="secondes entre deux salves (défaut : 2)")
@@ -100,11 +101,11 @@ def lire_arguments():
     return parser.parse_args()
 
 
-def main():
+def main() -> int:
     args = lire_arguments()
     console = Console(highlight=False)
     faux = Faker("fr_FR")
-    comptes = Counter()
+    comptes: Counter[str] = Counter()
     salves = 0
 
     # Un signal ne coupe jamais une salve : elle se termine, puis la boucle s'arrête
