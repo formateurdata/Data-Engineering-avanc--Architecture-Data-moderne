@@ -1,0 +1,284 @@
+# La pile du mini projet : PostgreSQL, Debezium, Kafka, SeaweedFS, catalogue Iceberg REST et Airflow.
+# Identifiants de développement, pour une démonstration locale : les ports n'écoutent que sur la machine.
+# Si un port est déjà pris, changez-le sans toucher à ce fichier : POSTGRES_PORT=25432 dans un fichier .env.
+# PostgreSQL évite 5432, souvent déjà occupé sur une machine de développement.
+name: mini_projet
+
+# Configuration S3 commune à SeaweedFS et à tous ses clients
+x-s3: &s3
+  AWS_ACCESS_KEY_ID: admin
+  AWS_SECRET_ACCESS_KEY: password
+  AWS_REGION: us-east-1
+
+services:
+  postgres-source:
+    image: postgres:16.15@sha256:5db6dac2ef5dcff512f4f00a009c3c332b9f2f28f24277175bf3e4a3d02ef83a
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10"]
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: boutique
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d boutique"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7
+    environment:
+      # Un seul nœud KRaft, à la fois broker et contrôleur
+      CLUSTER_ID: bWluaS1wcm9qZXQtY2RjLQ
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Deux listeners : les conteneurs passent par kafka:9092, la machine par 127.0.0.1:29092.
+      # 127.0.0.1 plutôt que localhost : le client Kafka essaierait d'abord IPv6 et afficherait une erreur à chaque connexion
+      KAFKA_LISTENERS: INTERNE://:9092,HOTE://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNE://kafka:9092,HOTE://127.0.0.1:${KAFKA_PORT:-29092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNE:PLAINTEXT,HOTE:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNE
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # Une seule partition : le topic des clients garde l'ordre de tous ses événements
+      KAFKA_NUM_PARTITIONS: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Le projet dure plusieurs mois : par défaut, Kafka effacerait les événements et les positions
+      # des consommateurs après 7 jours, soit l'écart entre deux séances
+      KAFKA_LOG_RETENTION_MS: -1
+      KAFKA_OFFSETS_RETENTION_MINUTES: 525600
+    ports:
+      - "127.0.0.1:${KAFKA_PORT:-29092}:29092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null"]
+      interval: 5s
+      timeout: 15s
+      retries: 30
+
+  # Interface locale d'observation et d'administration de Kafka et Kafka Connect.
+  # Elle ne s'expose pas sur le réseau : http://localhost:8090.
+  kafbat-ui:
+    image: ghcr.io/kafbat/kafka-ui:0c481c0@sha256:ccb2d0c37c222a033aa0c4d3a9b76576dfdf321b70744df91fe15d2b0a00b400
+    depends_on:
+      kafka:
+        condition: service_healthy
+      debezium-connect:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: mini-projet
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium-connect
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://debezium-connect:8083
+    ports:
+      - "127.0.0.1:${KAFBAT_UI_PORT:-8090}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  debezium-connect:
+    image: quay.io/debezium/connect:3.6.3@sha256:29a654aba942c9b9450d588974b53e275919ae889174fb9fb822e332c9664f54
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres-source:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: mini-projet-connect
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+    ports:
+      - "127.0.0.1:${CONNECT_PORT:-8083}:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/connector-plugins > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Applique la configuration versionnée avec PUT : Kafka Connect crée le connecteur s'il est absent
+  # et le met à jour sinon. Le conteneur se termine ensuite volontairement avec le code 0.
+  debezium-init:
+    image: quay.io/debezium/connect:3.6.3@sha256:29a654aba942c9b9450d588974b53e275919ae889174fb9fb822e332c9664f54
+    depends_on:
+      debezium-connect:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        endpoint=http://debezium-connect:8083
+        connector=pg-source-connector
+        config=/connectors/pg-source-connector.json
+
+        curl -fsS -X PUT \
+          -H 'Content-Type: application/json' \
+          --data-binary "@$$config" \
+          "$$endpoint/connectors/$$connector/config"
+
+        for attempt in $$(seq 1 30); do
+          status="$$(curl -fsS "$$endpoint/connectors/$$connector/status" || true)"
+          if printf '%s' "$$status" | grep -Eq '"connector"[[:space:]]*:[[:space:]]*\{[^}]*"state"[[:space:]]*:[[:space:]]*"RUNNING"' \
+            && printf '%s' "$$status" | grep -Eq '"tasks"[[:space:]]*:[[:space:]]*\[[[:space:]]*\{[^}]*"state"[[:space:]]*:[[:space:]]*"RUNNING"'; then
+            printf '%s\n' "$$status"
+            exit 0
+          fi
+          sleep 2
+        done
+
+        echo "Le connecteur Debezium n'a pas atteint l'état RUNNING après 60 secondes." >&2
+        exit 1
+    volumes:
+      - ./connectors:/connectors:ro
+
+  # Stockage objet compatible S3 : avec ces identifiants, toute requête non signée est refusée
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    command: ["server", "-dir=/data", "-ip=seaweedfs", "-ip.bind=0.0.0.0", "-s3", "-volume.max=20", "-master.volumeSizeLimitMB=1024"]
+    environment:
+      <<: *s3
+    ports:
+      - "127.0.0.1:${S3_PORT:-8333}:8333"
+      # Interface web pour parcourir les fichiers : /buckets/warehouse/
+      - "127.0.0.1:${SEAWEEDFS_UI_PORT:-18888}:8888"
+    volumes:
+      - seaweedfs_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8333/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Crée le bucket s'il n'existe pas, puis s'arrête : un conteneur « Exited (0) » est normal ici.
+  # La liste passe d'abord : recréer un bucket existant est une erreur, qui bloquerait chaque redémarrage
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        echo s3.bucket.list | weed shell -master=seaweedfs:9333 | grep -qw warehouse
+        || echo s3.bucket.create -name warehouse | weed shell -master=seaweedfs:9333
+
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:1.10.1@sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f
+    depends_on:
+      seaweedfs-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *s3
+      # Le catalogue garde ses métadonnées dans un fichier SQLite, sur un volume : /tmp, sa valeur par défaut, se perd
+      CATALOG_URI: jdbc:sqlite:/home/iceberg/iceberg_catalog.db
+      # Une seule connexion : à deux sur ce fichier, deux écritures simultanées bloquent le catalogue jusqu'à son redémarrage
+      CATALOG_CLIENTS: 1
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://seaweedfs:8333
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+    ports:
+      - "127.0.0.1:${ICEBERG_REST_PORT:-8181}:8181"
+    volumes:
+      - iceberg_catalog:/home/iceberg
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8181/v1/config > /dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Airflow en un seul conteneur : ordonnanceur, interface et exécution des tâches
+  airflow:
+    image: mini-projet-airflow:3.3.2
+    build:
+      # Le contexte reste la racine du projet : Docker Desktop y a déjà l'autorisation de lecture.
+      # Le Dockerfile, lui, est regroupé avec l'infrastructure.
+      context: ..
+      dockerfile: infra/Dockerfile.airflow
+    command: ["standalone"]
+    depends_on:
+      debezium-init:
+        condition: service_completed_successfully
+      iceberg-rest:
+        condition: service_healthy
+    environment:
+      <<: *s3
+      # Métadonnées et configuration sur un volume, pour survivre à la recréation du conteneur
+      AIRFLOW_CONFIG: /opt/airflow/metadata/airflow.cfg
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/metadata/airflow.db
+      # Airflow 3 prend en charge SQLite en WAL avec LocalExecutor ; ce choix rend la garantie explicite.
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      # La démo n'a pas besoin de paralléliser des tâches d'un même DAG.
+      AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+      PYTHONUNBUFFERED: "1"
+      UV_CACHE_DIR: /opt/airflow/.cache/uv
+      # Le provider Kafka importe ingest_bronze.py depuis ce dossier
+      PYTHONPATH: /opt/airflow/scripts
+      # Depuis ce conteneur, les services se joignent par leur nom ; sur la machine, les scripts utilisent localhost
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      S3_ENDPOINT: http://seaweedfs:8333
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DEBEZIUM_CONNECT_URL: http://debezium-connect:8083
+      # Les connexions des providers
+      AIRFLOW_CONN_DEBEZIUM_CONNECT: http://debezium-connect:8083
+      AIRFLOW_CONN_KAFKA_CDC: >-
+        {"conn_type": "kafka", "extra": {"bootstrap.servers": "kafka:9092", "group.id": "airflow-iceberg-bronze-ingestor",
+        "auto.offset.reset": "earliest", "enable.auto.commit": "false", "max.poll.interval.ms": "600000"}}
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    volumes:
+      - ../dags:/opt/airflow/dags:ro
+      - ../scripts:/opt/airflow/scripts:ro
+      - airflow_metadata:/opt/airflow/metadata
+      - airflow_logs:/opt/airflow/logs
+      - uv_cache:/opt/airflow/.cache/uv
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/v2/monitor/health > /dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  # Générateur de trafic, jamais démarré par défaut : docker compose --profile generator up -d data-generator
+  data-generator:
+    profiles: [generator]
+    image: ghcr.io/astral-sh/uv:0.13.6-python3.13-trixie-slim@sha256:e586c1c65b7071aec78f02c5587c76c5011159cd76b3d6f1255f40e48e850abc
+    depends_on:
+      postgres-source:
+        condition: service_healthy
+    command: ["uv", "run", "/scripts/generator.py"]
+    environment:
+      POSTGRES_HOST: postgres-source
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: boutique
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+    volumes:
+      - ../scripts:/scripts:ro
+      - generator_uv_cache:/root/.cache/uv
+
+volumes:
+  postgres_data:
+  kafka_data:
+  seaweedfs_data:
+  iceberg_catalog:
+  airflow_metadata:
+  airflow_logs:
+  uv_cache:
+  generator_uv_cache:
