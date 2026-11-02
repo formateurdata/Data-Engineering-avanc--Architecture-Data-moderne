@@ -21,6 +21,7 @@ cdc-iceberg-demo/
 ├── infra/
 │   ├── docker-compose.yml
 │   ├── Dockerfile.airflow
+│   ├── Dockerfile.garage-init
 │   ├── INFRASTRUCTURE.md
 │   ├── sql/init.sql
 │   └── connectors/pg-source-connector.json
@@ -37,16 +38,17 @@ Tous les fichiers doivent être complets, sans placeholder. Les versions des ima
 
 ## 3. Infrastructure locale
 
-Tous les services partagent le réseau Docker Compose. Utiliser des volumes persistants pour PostgreSQL, Kafka, SeaweedFS, les métadonnées Airflow et, si nécessaire, le catalogue REST.
+Tous les services partagent le réseau Docker Compose. Utiliser des volumes persistants pour PostgreSQL, Kafka, Garage, les métadonnées Airflow et, si nécessaire, le catalogue REST.
 
 | Service | Exigences | Adresse interne | Accès depuis l’hôte |
 |---|---|---|---|
 | `postgres-source` | PostgreSQL 16, `wal_level=logical`, slots et WAL senders suffisants | `postgres-source:5432` | `localhost:15432` |
 | `kafka` | Mode KRaft, un broker, un contrôleur local | `kafka:9092` | `127.0.0.1:29092` |
 | `debezium-connect` | Connecteur PostgreSQL Debezium | `debezium-connect:8083` | `localhost:8083` |
-| `seaweedfs` | Stockage objet S3 | `http://seaweedfs:8333` | API `localhost:8333`, interface web `localhost:18888/buckets/warehouse/` |
-| `seaweedfs-init` | Initialisation éphémère et idempotente du bucket | — | — |
-| `iceberg-rest` | Catalogue REST compatible avec PyIceberg et SeaweedFS | `http://iceberg-rest:8181` | `http://localhost:8181` |
+| `garage` | Stockage objet S3, mono-nœud pour la démonstration | `http://garage:3900` | API `localhost:8333` |
+| `garage-init` | Création rejouable de la clé en lecture seule de S3 Manager, puis arrêt avec le code 0 | réseau de `garage` | aucun |
+| `s3-manager` | Interface web de consultation de Garage, avec une clé en lecture seule et sans bouton de suppression | `s3-manager:8080` | `http://localhost:8334` |
+| `iceberg-rest` | Catalogue REST compatible avec PyIceberg et Garage | `http://iceberg-rest:8181` | `http://localhost:8181` |
 | `airflow` | Mode standalone, image personnalisée contenant `uv` et `curl` | `airflow:8080` | `localhost:8080` |
 
 Configurer deux listeners Kafka avec des adresses annoncées adaptées : un pour les conteneurs et un pour l’hôte. Les topics de configuration, offsets et statuts de Connect ont un facteur de réplication de 1. Le topic `pg_src.public.customers` comporte une seule partition pour simplifier l’ordre des événements de cette démonstration.
@@ -62,9 +64,9 @@ AWS_REGION=us-east-1
 warehouse=s3://warehouse/
 ```
 
-Configurer explicitement l’endpoint S3 et l’accès par chemin pour SeaweedFS dans chaque client concerné. Les conteneurs utilisent `http://seaweedfs:8333` ; les scripts lancés sur l’hôte utilisent `http://localhost:8333`. Appliquer la même distinction au catalogue REST. Si le catalogue fournit une configuration S3 au client, vérifier qu’elle ne remplace pas l’endpoint hôte par un nom Docker inaccessible.
+Configurer explicitement l’endpoint S3 et l’accès par chemin pour Garage dans chaque client concerné. Les conteneurs utilisent `http://garage:3900` ; les scripts lancés sur l’hôte utilisent `http://localhost:8333`. Appliquer la même distinction au catalogue REST. Si le catalogue fournit une configuration S3 au client, vérifier qu’elle ne remplace pas l’endpoint hôte par un nom Docker inaccessible.
 
-Le service `seaweedfs-init` attend SeaweedFS, crée le bucket `warehouse` s’il n’existe pas et sort avec un code nul. Le catalogue démarre après la réussite de cette initialisation. Utiliser des contrôles de disponibilité et des tentatives bornées, sans temporisation fixe comme seul mécanisme de synchronisation.
+Garage démarre en mono-nœud et crée automatiquement la clé de démonstration ainsi que le bucket `warehouse`. Le catalogue démarre après le contrôle de disponibilité de Garage, avec des tentatives bornées plutôt qu'une temporisation fixe.
 
 ## 4. Source PostgreSQL et connecteur CDC
 

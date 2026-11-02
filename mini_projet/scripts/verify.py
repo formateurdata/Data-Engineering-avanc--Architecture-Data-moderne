@@ -9,8 +9,11 @@
 # ///
 """Compare l'état métier PostgreSQL et la table Iceberg Silver jusqu'à convergence ou expiration.
 
-Usage : ``uv run scripts/verify.py --attempts 20 --interval 3``.
+Usage : ``uv run scripts/verify.py --attempts 30 --interval 6``.
 ``last_event_ts`` est une métadonnée Silver et n'entre volontairement pas dans la comparaison.
+
+Le délai par défaut est de 3 minutes : le DAG passe toutes les 2 minutes et dure moins de 30 secondes, un changement
+peut donc attendre près de 2 min 30 avant d'arriver dans Silver.
 """
 
 import argparse
@@ -27,8 +30,8 @@ COLONNES = ("id", "full_name", "email", "city", "loyalty_points")
 
 def arguments():
     parser = argparse.ArgumentParser(description="Vérifie la convergence entre PostgreSQL et Silver.")
-    parser.add_argument("--attempts", type=int, default=20, help="nombre maximal de comparaisons (défaut : 20)")
-    parser.add_argument("--interval", type=float, default=3.0, help="secondes entre deux comparaisons (défaut : 3)")
+    parser.add_argument("--attempts", type=int, default=30, help="nombre maximal de comparaisons (défaut : 30)")
+    parser.add_argument("--interval", type=float, default=6.0, help="secondes entre deux comparaisons (défaut : 6)")
     args = parser.parse_args()
     if args.attempts < 1 or args.interval < 0:
         parser.error("--attempts doit être positif et --interval ne peut pas être négatif")
@@ -55,8 +58,8 @@ def cible_silver():
             "type": "rest",
             "uri": os.environ.get("ICEBERG_REST_URI", "http://localhost:8181"),
             "s3.endpoint": os.environ.get("S3_ENDPOINT", "http://localhost:8333"),
-            "s3.access-key-id": os.environ.get("AWS_ACCESS_KEY_ID", "admin"),
-            "s3.secret-access-key": os.environ.get("AWS_SECRET_ACCESS_KEY", "password"),
+            "s3.access-key-id": os.environ.get("AWS_ACCESS_KEY_ID", "garageadmin"),
+            "s3.secret-access-key": os.environ.get("AWS_SECRET_ACCESS_KEY", "garage-demo-secret-2026"),
             "s3.region": os.environ.get("AWS_REGION", "us-east-1"),
         },
     )

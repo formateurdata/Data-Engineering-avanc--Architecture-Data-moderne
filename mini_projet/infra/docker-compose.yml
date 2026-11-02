@@ -1,13 +1,13 @@
-# La pile du mini projet : PostgreSQL, Debezium, Kafka, SeaweedFS, catalogue Iceberg REST et Airflow.
+# La pile du mini projet : PostgreSQL, Debezium, Kafka, Garage, catalogue Iceberg REST et Airflow.
 # Identifiants de développement, pour une démonstration locale : les ports n'écoutent que sur la machine.
 # Si un port est déjà pris, changez-le sans toucher à ce fichier : POSTGRES_PORT=25432 dans un fichier .env.
 # PostgreSQL évite 5432, souvent déjà occupé sur une machine de développement.
 name: mini_projet
 
-# Configuration S3 commune à SeaweedFS et à tous ses clients
+# Configuration S3 commune à Garage et à tous ses clients
 x-s3: &s3
-  AWS_ACCESS_KEY_ID: admin
-  AWS_SECRET_ACCESS_KEY: password
+  AWS_ACCESS_KEY_ID: garageadmin
+  AWS_SECRET_ACCESS_KEY: garage-demo-secret-2026
   AWS_REGION: us-east-1
 
 services:
@@ -145,42 +145,90 @@ services:
     volumes:
       - ./connectors:/connectors:ro
 
-  # Stockage objet compatible S3 : avec ces identifiants, toute requête non signée est refusée
-  seaweedfs:
-    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
-    command: ["server", "-dir=/data", "-ip=seaweedfs", "-ip.bind=0.0.0.0", "-s3", "-volume.max=20", "-master.volumeSizeLimitMB=1024"]
+  # Stockage objet S3 : Garage est volontairement en mono-nœud pour la démonstration locale.
+  garage:
+    image: dxflrs/garage:v2.5.0@sha256:677e5b758e4425a325b811c425c026bf35a4bf42f7ddbaa773de3f4fd779a5a5
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
     environment:
       <<: *s3
+      GARAGE_DEFAULT_ACCESS_KEY: garageadmin
+      GARAGE_DEFAULT_SECRET_KEY: garage-demo-secret-2026
+      GARAGE_DEFAULT_BUCKET: warehouse
     ports:
-      - "127.0.0.1:${S3_PORT:-8333}:8333"
-      # Interface web pour parcourir les fichiers : /buckets/warehouse/
-      - "127.0.0.1:${SEAWEEDFS_UI_PORT:-18888}:8888"
+      - "127.0.0.1:${S3_PORT:-8333}:3900"
     volumes:
-      - seaweedfs_data:/data
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage_data:/var/lib/garage
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8333/healthz"]
+      test: ["CMD", "/garage", "status"]
       interval: 3s
-      timeout: 3s
+      timeout: 5s
       retries: 30
 
-  # Crée le bucket s'il n'existe pas, puis s'arrête : un conteneur « Exited (0) » est normal ici.
-  # La liste passe d'abord : recréer un bucket existant est une erreur, qui bloquerait chaque redémarrage
-  seaweedfs-init:
-    image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+  # Crée la clé en lecture seule de S3 Manager. Compose relance ce service à chaque démarrage et Garage refuse
+  # d'importer deux fois une clé : d'où le test préalable. Le conteneur se termine ensuite volontairement avec le code 0.
+  garage-init:
+    image: mini-projet-garage-init:2.5.0
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.garage-init
     depends_on:
-      seaweedfs:
+      garage:
         condition: service_healthy
-    entrypoint: ["sh", "-c"]
+    # La CLI joint Garage sur son rpc_public_addr, 127.0.0.1:3901 : elle doit partager son réseau
+    network_mode: service:garage
+    entrypoint: ["/bin/sh", "-ec"]
     command:
-      - >-
-        echo s3.bucket.list | weed shell -master=seaweedfs:9333 | grep -qw warehouse
-        || echo s3.bucket.create -name warehouse | weed shell -master=seaweedfs:9333
+      - |
+        cle=garagelecture
+
+        garage key info "$$cle" > /dev/null 2>&1 \
+          || garage key import --yes -n s3-manager-lecture "$$cle" garage-lecture-secret-2026 > /dev/null
+
+        for attempt in $$(seq 1 30); do
+          if garage bucket allow --read warehouse --key "$$cle" > /dev/null; then
+            exit 0
+          fi
+          sleep 1
+        done
+
+        echo "La clé $$cle n'a pas obtenu la lecture du bucket warehouse après 30 secondes." >&2
+        exit 1
+    volumes:
+      # La CLI lit le secret RPC dans la configuration et l'identité du nœud dans le volume
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage_data:/var/lib/garage:ro
+
+  # Interface locale de consultation du stockage objet, à travers l'API S3 de Garage : http://localhost:8334.
+  # Sa clé est en lecture seule : Garage refuse toute écriture. ALLOW_DELETE retire en plus les boutons de suppression.
+  s3-manager:
+    image: cloudlena/s3manager:v0.12.0@sha256:b83bdb03d9dd0e8f5e7f5b08c0925e3844a90c5c42813ba0f394b6cccdbf3cc7
+    depends_on:
+      garage-init:
+        condition: service_completed_successfully
+    environment:
+      S3_1_NAME: garage
+      S3_1_ENDPOINT: garage:3900
+      S3_1_REGION: us-east-1
+      S3_1_ACCESS_KEY_ID: garagelecture
+      S3_1_SECRET_ACCESS_KEY: garage-lecture-secret-2026
+      S3_1_USE_SSL: "false"
+      S3_1_BUCKET_LOOKUP: Path
+      ALLOW_DELETE: "false"
+    ports:
+      - "127.0.0.1:${S3_MANAGER_PORT:-8334}:8080"
+    healthcheck:
+      # La page répond 200 même si Garage refuse la clé : seul le bucket affiché prouve que la lecture fonctionne
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8080/garage/buckets | grep -q buckets/warehouse"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
   iceberg-rest:
     image: apache/iceberg-rest-fixture:1.10.1@sha256:f7d679d30ac9c640bdeb2c015dff533cd3c8f1c7d491ebcb5d436f9a42db1d6f
     depends_on:
-      seaweedfs-init:
-        condition: service_completed_successfully
+      garage:
+        condition: service_healthy
     environment:
       <<: *s3
       # Le catalogue garde ses métadonnées dans un fichier SQLite, sur un volume : /tmp, sa valeur par défaut, se perd
@@ -189,12 +237,24 @@ services:
       CATALOG_CLIENTS: 1
       CATALOG_WAREHOUSE: s3://warehouse/
       CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
-      CATALOG_S3_ENDPOINT: http://seaweedfs:8333
+      CATALOG_S3_ENDPOINT: http://garage:3900
       CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      # Le client AWS CRT signe les payloads S3 en flux, un mode non pris en charge
+      # par Garage v2. Le client SDK standard est compatible.
+      CATALOG_S3_CRT__ENABLED: "false"
+      CATALOG_S3_ACCESS__KEY__ID: garageadmin
+      CATALOG_S3_SECRET__ACCESS__KEY: garage-demo-secret-2026
+      CATALOG_S3_REGION: us-east-1
+      # SDK AWS 2.30+ ajoute par défaut un CRC32 en trailer. En ne calculant les
+      # sommes de contrôle que lorsqu'elles sont requises, le SDK évite ce mode
+      # d'écriture et reste compatible avec Garage v2.
+      AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+      AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
     ports:
       - "127.0.0.1:${ICEBERG_REST_PORT:-8181}:8181"
     volumes:
-      - iceberg_catalog:/home/iceberg
+      # Nouveau catalogue : l'ancien reste conservé avec les objets SeaweedFS existants.
+      - iceberg_catalog_garage:/home/iceberg
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8181/v1/config > /dev/null"]
       interval: 3s
@@ -233,13 +293,13 @@ services:
       PYTHONPATH: /opt/airflow/scripts
       # Depuis ce conteneur, les services se joignent par leur nom ; sur la machine, les scripts utilisent localhost
       ICEBERG_REST_URI: http://iceberg-rest:8181
-      S3_ENDPOINT: http://seaweedfs:8333
+      S3_ENDPOINT: http://garage:3900
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       DEBEZIUM_CONNECT_URL: http://debezium-connect:8083
       # Les connexions des providers
       AIRFLOW_CONN_DEBEZIUM_CONNECT: http://debezium-connect:8083
       AIRFLOW_CONN_KAFKA_CDC: >-
-        {"conn_type": "kafka", "extra": {"bootstrap.servers": "kafka:9092", "group.id": "airflow-iceberg-bronze-ingestor",
+        {"conn_type": "kafka", "extra": {"bootstrap.servers": "kafka:9092", "group.id": "airflow-iceberg-bronze-ingestor-garage",
         "auto.offset.reset": "earliest", "enable.auto.commit": "false", "max.poll.interval.ms": "600000"}}
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
@@ -276,8 +336,8 @@ services:
 volumes:
   postgres_data:
   kafka_data:
-  seaweedfs_data:
-  iceberg_catalog:
+  garage_data:
+  iceberg_catalog_garage:
   airflow_metadata:
   airflow_logs:
   uv_cache:

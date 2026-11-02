@@ -23,8 +23,8 @@ CATALOGUE = {
     "type": "rest",
     "uri": os.environ.get("ICEBERG_REST_URI", "http://localhost:8181"),
     "s3.endpoint": os.environ.get("S3_ENDPOINT", "http://localhost:8333"),
-    "s3.access-key-id": os.environ.get("AWS_ACCESS_KEY_ID", "admin"),
-    "s3.secret-access-key": os.environ.get("AWS_SECRET_ACCESS_KEY", "password"),
+    "s3.access-key-id": os.environ.get("AWS_ACCESS_KEY_ID", "garageadmin"),
+    "s3.secret-access-key": os.environ.get("AWS_SECRET_ACCESS_KEY", "garage-demo-secret-2026"),
     "s3.region": os.environ.get("AWS_REGION", "us-east-1"),
 }
 

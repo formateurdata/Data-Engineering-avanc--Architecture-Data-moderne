@@ -36,7 +36,8 @@ L'objectif n'est pas de retenir des outils par habitude. Pour chaque besoin, nou
 | Transporter les événements | Appel direct vers le lakehouse, fichiers intermédiaires, RabbitMQ, Kafka | **Kafka** : découple producteurs et consommateurs, conserve les messages, permet le rejeu et expose une position de lecture (offset). |
 | Observer les messages | Scripts CLI Kafka, logs des conteneurs, interface web | **Kafbat** : rend le topic, les offsets et le connecteur visibles pendant le cours. |
 | Stocker les événements analytiques | CSV, Parquet seul, Delta Lake, Hudi, Iceberg | **Iceberg** : tables versionnées avec catalogue, schéma explicite et stockage objet ; bon support pour distinguer Bronze et Silver. |
-| Stockage objet local | Dossier local, MinIO, SeaweedFS, service cloud | **SeaweedFS avec API S3** : léger en local et compatible avec le mode de stockage utilisé par Iceberg. |
+| Stockage objet local | Dossier local, MinIO, SeaweedFS, Garage, service cloud | **Garage avec API S3** : léger, auto-hébergeable, compatible avec Iceberg et introduit les notions de stockage objet distribué. |
+| Consulter le stockage objet | Commandes S3, scripts, interface web | **S3 Manager** : rend les fichiers Parquet et les métadonnées Iceberg visibles pendant le cours, à travers l'API S3 de Garage et avec une clé en lecture seule. |
 | Orchestrer les traitements | Lancement manuel, cron, script monolithique, Airflow | **Airflow** : rend les dépendances, les logs, les relances et les états des tâches visibles. |
 | Vérifier la qualité | Confiance visuelle, quelques requêtes SQL, comparaison automatisée | **Script de convergence** : compare PostgreSQL et Silver après une période d'attente contrôlée. |
 
@@ -48,18 +49,18 @@ Après cette comparaison, nous retenons l'architecture suivante :
 
 ```text
 PostgreSQL ──> Debezium ──> Kafka ──> Bronze ──> Silver
-     ↑               │             │         tables Iceberg sur SeaweedFS
+     ↑               │             │          tables Iceberg sur Garage
 générateur      capture CDC     Kafbat                │
                                               Airflow + contrôle qualité
 ```
 
-Les zones Bronze et Silver sont des tables **Iceberg**. Iceberg définit les tables, leurs schémas, snapshots et métadonnées ; **SeaweedFS** conserve physiquement les fichiers de données et de métadonnées grâce à son API S3. Le catalogue Iceberg REST relie les deux.
+Les zones Bronze et Silver sont des tables **Iceberg**. Iceberg définit les tables, leurs schémas, snapshots et métadonnées ; **Garage** conserve physiquement les fichiers de données et de métadonnées grâce à son API S3. Le catalogue Iceberg REST relie les deux.
 
 ## 3. Ce que nous allons construire dans cette séance
 
 Cette séance couvre une première version complète du pipeline : **ingestion, Bronze, Silver et qualité**.
 
-L'infrastructure est déjà fournie : PostgreSQL, Debezium, Kafka, Kafbat, SeaweedFS, le catalogue Iceberg et Airflow sont prêts à démarrer. Nous ne codons ni Docker Compose ni la configuration des services pendant cette séance ; nous les utilisons comme un socle pour nous concentrer sur le **code Python**.
+L'infrastructure est déjà fournie : PostgreSQL, Debezium, Kafka, Kafbat, Garage, S3 Manager, le catalogue Iceberg et Airflow sont prêts à démarrer. Nous ne codons ni Docker Compose ni la configuration des services pendant cette séance ; nous les utilisons comme un socle pour nous concentrer sur le **code Python**.
 
 Les fichiers à développer ou expliquer sont :
 
@@ -76,7 +77,8 @@ Nous présentons brièvement le rôle des services déjà fournis :
 - Debezium Connect : capture les changements PostgreSQL ;
 - Kafka : journal d'événements ;
 - Kafbat : interface d'observation de Kafka et du connecteur ;
-- SeaweedFS : stockage objet compatible S3 ;
+- Garage : stockage objet compatible S3 ;
+- S3 Manager : interface de consultation des fichiers stockés dans Garage ;
 - Iceberg REST : catalogue des tables Iceberg ;
 - Airflow : orchestration du traitement.
 
@@ -91,6 +93,7 @@ Interfaces à ouvrir :
 - Kafbat : <http://localhost:8090>
 - Airflow : <http://localhost:8080>
 - Debezium Connect : <http://localhost:8083>
+- S3 Manager : <http://localhost:8334>
 
 ### Étape B — Observer les changements : PostgreSQL vers Kafka
 
@@ -126,11 +129,13 @@ Silver n'est plus un journal d'événements : c'est l'état actuel des clients. 
 1. déduplique Bronze par `(topic, partition, offset)` ;
 2. conserve le dernier événement de chaque client ;
 3. retire les clients supprimés ;
-4. écrit `silver.customers` : une table Iceberg dont les fichiers sont stockés dans SeaweedFS.
+4. écrit `silver.customers_current` : une table Iceberg dont les fichiers sont stockés dans Garage.
 
 ```bash
 make reconcile
 ```
+
+Dans S3 Manager, nous ouvrons le bucket `warehouse`, puis `silver/customers_current/` : `data/` contient les fichiers Parquet et `metadata/` les métadonnées Iceberg. L'interface les télécharge, le navigateur ne les affiche pas directement.
 
 ### Étape E — Orchestrer et contrôler la qualité
 
@@ -148,7 +153,7 @@ Enfin, nous vérifions que la table Silver converge vers PostgreSQL :
 make verify
 ```
 
-Le contrôle compare les colonnes métier des deux systèmes et attend la convergence pendant une durée limitée. Une différence doit être expliquée : retard normal du pipeline, problème de connecteur, erreur de transformation ou défaut de qualité source.
+Le contrôle compare les colonnes métier des deux systèmes et attend la convergence jusqu'à 3 minutes : le DAG ne passe que toutes les deux minutes, un écart affiché pendant cette attente est donc normal. Une différence doit être expliquée : retard normal du pipeline, problème de connecteur, erreur de transformation ou défaut de qualité source.
 
 ## 4. Critères de réussite de la séance
 
