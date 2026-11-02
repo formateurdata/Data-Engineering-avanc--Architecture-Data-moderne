@@ -169,9 +169,6 @@ services:
   # d'importer deux fois une clé : d'où le test préalable. Le conteneur se termine ensuite volontairement avec le code 0.
   garage-init:
     image: mini-projet-garage-init:2.5.0
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.garage-init
     depends_on:
       garage:
         condition: service_healthy
@@ -264,11 +261,6 @@ services:
   # Airflow en un seul conteneur : ordonnanceur, interface et exécution des tâches
   airflow:
     image: mini-projet-airflow:3.3.2
-    build:
-      # Le contexte reste la racine du projet : Docker Desktop y a déjà l'autorisation de lecture.
-      # Le Dockerfile, lui, est regroupé avec l'infrastructure.
-      context: ..
-      dockerfile: infra/Dockerfile.airflow
     command: ["standalone"]
     depends_on:
       debezium-init:

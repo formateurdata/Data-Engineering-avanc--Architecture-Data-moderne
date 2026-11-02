@@ -4,6 +4,8 @@
 unexport PWD
 
 COMPOSE := docker compose -f infra/docker-compose.yml
+AIRFLOW_IMAGE := mini-projet-airflow:3.3.2
+GARAGE_INIT_IMAGE := mini-projet-garage-init:2.5.0
 POSTGRES_HOST ?= localhost
 POSTGRES_PORT ?= 15432
 POSTGRES_DB ?= boutique
@@ -13,7 +15,11 @@ POSTGRES_PASSWORD ?= password
 .PHONY: up down reset register-cdc logs generate
 
 up:
-	$(COMPOSE) up --build --remove-orphans --wait --wait-timeout 180 -d
+	# Docker Compose 5.6/Buildx 0.37 refuse certains contextes avec Bake ; la
+	# construction directe reste portable et ne demande aucune permission spéciale.
+	docker build --file infra/Dockerfile.airflow --tag $(AIRFLOW_IMAGE) infra
+	docker build --file infra/Dockerfile.garage-init --tag $(GARAGE_INIT_IMAGE) infra
+	$(COMPOSE) up --no-build --remove-orphans --wait --wait-timeout 180 -d
 
 down:
 	$(COMPOSE) down
