@@ -2,7 +2,7 @@
 # Identifiants de développement, pour une démonstration locale : les ports n'écoutent que sur la machine.
 # Si un port est déjà pris, changez-le sans toucher à ce fichier : POSTGRES_PORT=25432 dans un fichier .env.
 # PostgreSQL évite 5432, souvent déjà occupé sur une machine de développement.
-name: mini_projet
+name: mini-projet
 
 # Configuration S3 commune à Garage et à tous ses clients
 x-s3: &s3
