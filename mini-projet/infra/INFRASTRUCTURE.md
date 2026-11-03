@@ -14,6 +14,8 @@ docker compose -f infra/docker-compose.yml logs debezium-init
 
 Démarrer avec `make up` plutôt qu'avec `docker compose up` : le chemin du projet contient un `é`, que le terminal peut écrire sous deux formes Unicode (NFC ou NFD). Compose intègre ce chemin au hash des services qui montent des fichiers du projet, et recréerait PostgreSQL, Garage et Airflow à chaque changement d'écriture. Le `Makefile` retire `PWD` de l'environnement : Compose lit alors toujours la forme du disque. Une commande `docker compose up` lancée à la main reste exposée, y compris avec `--profile generator`. Les données ne sont pas perdues, mais ces services redémarrent.
 
+Les images spécifiques au projet (`Airflow` et `garage-init`) sont publiées sur GitHub Container Registry. `make up` les télécharge automatiquement ; les étudiants n'ont donc pas besoin de construire des images Docker. Elles sont publiées pour `linux/amd64` (Docker Desktop avec WSL2/Windows) et `linux/arm64` (Mac Apple Silicon). La cible `make build-images` est réservée à la maintenance de ces images.
+
 `debezium-init` applique `connectors/pg-source-connector.json` par `PUT` sur l API Kafka Connect. L opération est idempotente : elle crée le connecteur absent ou met à jour celui qui existe. Après une modification de ce fichier, rejouer explicitement son initialisation :
 
 ```sh

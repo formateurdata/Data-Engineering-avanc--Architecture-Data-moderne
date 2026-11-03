@@ -44,7 +44,7 @@ Sous Windows, utilisez de préférence **WSL2** avec Docker Desktop : ouvrez ce 
 make up
 ```
 
-Au premier lancement, Docker construit l'image Airflow puis démarre les services. Ouvrez ensuite :
+Au premier lancement, Docker télécharge les deux images pédagogiques déjà construites (`Airflow` et l'outil d'initialisation de Garage), puis démarre les services. Il n'est pas nécessaire de construire d'image localement. Ouvrez ensuite :
 
 - Kafbat : <http://localhost:8090>
 - Airflow : <http://localhost:8080>
@@ -101,7 +101,7 @@ Quand les tables Iceberg existeront, S3 Manager permettra de télécharger les f
 
 | Commande | Rôle |
 | --- | --- |
-| `make up` | Construit les images nécessaires et démarre l'infrastructure. |
+| `make up` | Télécharge les images nécessaires et démarre l'infrastructure. |
 | `make down` | Arrête les services en conservant les données. |
 | `make logs` | Suit les logs des services. |
 | `make generate` | Lance le générateur en continu ; arrêter avec `Ctrl+C`. |

@@ -168,7 +168,7 @@ services:
   # Crée la clé en lecture seule de S3 Manager. Compose relance ce service à chaque démarrage et Garage refuse
   # d'importer deux fois une clé : d'où le test préalable. Le conteneur se termine ensuite volontairement avec le code 0.
   garage-init:
-    image: mini-projet-garage-init:2.5.0
+    image: ${GARAGE_INIT_IMAGE:-ghcr.io/formateurdata/mini-projet-garage-init:2.5.0}
     depends_on:
       garage:
         condition: service_healthy
@@ -260,7 +260,7 @@ services:
 
   # Airflow en un seul conteneur : ordonnanceur, interface et exécution des tâches
   airflow:
-    image: mini-projet-airflow:3.3.2
+    image: ${AIRFLOW_IMAGE:-ghcr.io/formateurdata/mini-projet-airflow:3.3.2}
     command: ["standalone"]
     depends_on:
       debezium-init:

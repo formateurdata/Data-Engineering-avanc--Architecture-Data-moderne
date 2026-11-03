@@ -4,22 +4,26 @@
 unexport PWD
 
 COMPOSE := docker compose -f infra/docker-compose.yml
-AIRFLOW_IMAGE := mini-projet-airflow:3.3.2
-GARAGE_INIT_IMAGE := mini-projet-garage-init:2.5.0
+# Images publiées pour les étudiants. Elles existent pour linux/amd64 (Windows/WSL)
+# et linux/arm64 (Mac Apple Silicon).
+AIRFLOW_IMAGE ?= ghcr.io/formateurdata/mini-projet-airflow:3.3.2
+GARAGE_INIT_IMAGE ?= ghcr.io/formateurdata/mini-projet-garage-init:2.5.0
+export AIRFLOW_IMAGE GARAGE_INIT_IMAGE
 POSTGRES_HOST ?= localhost
 POSTGRES_PORT ?= 15432
 POSTGRES_DB ?= boutique
 POSTGRES_USER ?= admin
 POSTGRES_PASSWORD ?= password
 
-.PHONY: up down reset register-cdc logs generate
+.PHONY: up build-images down reset register-cdc logs generate
 
 up:
-	# Docker Compose 5.6/Buildx 0.37 refuse certains contextes avec Bake ; la
-	# construction directe reste portable et ne demande aucune permission spéciale.
+	$(COMPOSE) up --pull always --remove-orphans --wait --wait-timeout 180 -d
+
+# Réservé à la maintenance des images. Les étudiants utilisent simplement `make up`.
+build-images:
 	docker build --file infra/Dockerfile.airflow --tag $(AIRFLOW_IMAGE) infra
 	docker build --file infra/Dockerfile.garage-init --tag $(GARAGE_INIT_IMAGE) infra
-	$(COMPOSE) up --no-build --remove-orphans --wait --wait-timeout 180 -d
 
 down:
 	$(COMPOSE) down
