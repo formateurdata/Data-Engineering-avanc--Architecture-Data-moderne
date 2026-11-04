@@ -88,7 +88,7 @@ services:
       retries: 30
 
   debezium-connect:
-    image: quay.io/debezium/connect:3.6.3@sha256:29a654aba942c9b9450d588974b53e275919ae889174fb9fb822e332c9664f54
+    image: quay.io/debezium/connect:3.6.3@sha256:99aa63f43fa828bc991687dd9d3895cd83cb4213e3848ed0238c5fd83ba95e1c
     depends_on:
       kafka:
         condition: service_healthy
@@ -114,7 +114,7 @@ services:
   # Applique la configuration versionnée avec PUT : Kafka Connect crée le connecteur s'il est absent
   # et le met à jour sinon. Le conteneur se termine ensuite volontairement avec le code 0.
   debezium-init:
-    image: quay.io/debezium/connect:3.6.3@sha256:29a654aba942c9b9450d588974b53e275919ae889174fb9fb822e332c9664f54
+    image: quay.io/debezium/connect:3.6.3@sha256:99aa63f43fa828bc991687dd9d3895cd83cb4213e3848ed0238c5fd83ba95e1c
     depends_on:
       debezium-connect:
         condition: service_healthy
